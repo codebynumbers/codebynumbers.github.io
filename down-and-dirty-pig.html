@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <!-- ## for client-side less
+  <link rel="stylesheet/less" type="text/css" href="/theme/css/style.less">
+  <script src="http://cdnjs.cloudflare.com/ajax/libs/less.js/1.7.3/less.min.js" type="text/javascript"></script>
+  -->
+  <link rel="stylesheet" type="text/css" href="/theme/css/style.css">
+  <link rel="stylesheet" type="text/css" href="/theme/css/pygments.css">
+  <link rel="stylesheet" type="text/css" href="//fonts.googleapis.com/css?family=PT+Sans|PT+Serif|PT+Mono">
+
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="author" content="Rob Harrigan">
+  <meta name="description" content="Posts and writings by Rob Harrigan">
+
+
+<meta name="keywords" content="mortar, mapreduce, pig, emr, python, jython">
+
+  <title>
+    CodeByNumbers
+&ndash; Getting down and dirty with Pig  </title>
+
+</head>
+
+<body>
+  <aside>
+    <div id="user_meta">
+      <a href="">
+        <img src="https://avatars2.githubusercontent.com/u/919600?v=3&s=140" alt="logo">
+      </a>
+      <h2><a href="">Rob Harrigan</a></h2>
+      <p>They see me code'n ...</p>
+      <ul>
+        <li><a href="http://50onred.com/blog/" target="_blank">50onRed Blog</a></li>
+        <li><a href="https://github.com/codebynumbers" target="_blank">Github</a></li>
+        <li><a href="https://www.linkedin.com/in/robertharrigan" target="_blank">LinkedIn</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <main>
+    <header>
+      <p>
+      <a href="">Index</a> &brvbar; <a href="/archives.html">Archives</a>
+      </p>
+    </header>
+
+<article>
+  <div class="article_title">
+    <h3><a href="/down-and-dirty-pig.html">Getting down and dirty with Pig</a></h3>
+  </div>
+  <div class="article_text">
+    <p>I've been a fan of <a href="http://mortardata.com/">Mortar</a> for over a year now. Mortar
+is a service that allowed you to create and run Pig scripts via a web interface.
+It also allows you to easily wire up Python/Jython functions that can be called
+from your Pig scripts. We've love Python and this made our scripts really
+powerful, allowing to decode data, extract top-level domains and so on.
+On top of that they have a <a href="https://github.com/mortardata/pig-json">json parsing library</a>
+that is orders of magnitude better than the default one that ships with Pig. 
+(I'll get to that later)</p>
+<p>Mortar recently announced an acquistion by Datadog and will be closing up shop. 
+Unfortunate yes, but seems to be the trend in web services. This also opened 
+up a huge opportunity to build a tool that allows us to continue to work
+in a familiar way and learn something about Pig and Amazon EMR along the way.</p>
+<p>At the time I started out on this tool, I was familiar with a couple of tools
+that do some things similar to Mortar. I had try HortonWorks which is self-contained VM. 
+And stumbled on a couple a couple others <a href="http://gethue.com/">Hue</a> and
+<a href="http://www.qubole.com/">Qubole</a> while experimenting. Neither looked particular inviting,
+and didn't want to learn a new tool, I wanted what I had, and more importantly
+I wanted to build something for the sake of building something. I think this is important step
+to really understand something. </p>
+<p>Ok then, what does our tool need? A web app. Flask seems like a good fit, 
+even better I have a project I use to bootstrap new apps
+<a href="https://github.com/codebynumbers/Flask-Foundation">Flask Foundation</a>. 
+And what does the <a href="http://en.wikipedia.org/wiki/Minimum_viable_product">MVP</a> look like?
+It needs to have users, user can create pig scripts that reference Python and Jython
+and those jobs can be Illustrated before they are run, and finally the scripts
+can be run and the results can be accessed.</p>
+<p>Not too bad for a feature list. Figured it would take no more than a couple of weekends 
+to whip that together and we'd have a tool that emulated the parts of Mortar we used.</p>
+<h3>Actual Outcome</h3>
+<p>Bootstrapping the Flask app went well, after some initial prototyping I converted the app
+over to class-based views using a 50onRed library called <a href="https://bitbucket.org/50onred/fifty/overview">Fifty-Flask</a>
+Created models for Users, Projects, Jobs, saving and reading data. All good stuff.
+Then the fun starts, actually running jobs. </p>
+<h4>The process flow</h4>
+<p>A user creates a project (assuming it's 100% flawless) and that job script gets stored on S3.
+The pig script needs to register a few jars so that magic can happen. 
+We'll need a jar for JsonParsing (borrowing the above that Mortar was kind enough to open source). 
+We'll need a Jar for running Python scripts (Using the built-in Jython jar, 
+after tracking down it's actual location on the latest AMI). We also need to register our Python functions,
+so a seperate file for thise need to pushed to s3 as well.
+Now we submit a job step to an EMR cluster. The cluster gets bootstrapped and our script runs.
+If all goes well, data gets stored somewhere on S3 and everyone's happy.</p>
+<h4>Usually Not</h4>
+<p>When writing Pig scripts you are bound to screw somethign up. Usually it's referencing 
+a variable that doesn't exist or trying to overwrite the results of a previous job.
+Wouldn't it be cool if our tool could help diagnose that upfront instead of waiting for 
+a 10-node cluster to bootstrapped?</p>
+<h4>Enter the Illustrator</h4>
+<p>Pig has a cool feature called Illustate which essentially takes your script, fetches some data
+runs your code and shows you what a few pieces of your data look like at each step.
+When it works, it's inavaluable. PS. it's not perfect and doesn't always work.</p>
+<p>So how could we add Illustration? The first hurdle, we want our illustration results as fast
+as possible. We don't want to wait for a 1 node cluster to come up each time we illustrate. 
+So ok, long running cluster it is. This is easy to with Amazon EMR with the keep_alive 
+parameter to running a jobflow. So we spin up a cluster, wait for it to become ready, and store
+some info about it. When we want to Illustrate, we take our script, remove any "STORE" directives,
+tack on an "ILLUSTRATE", push it up, run it and wait for our output to get written to S3.</p>
+<h4>Not so fast</h4>
+<p>I mean really not fast at all. Once evertthing was wired up. It was taking upwards of 10 minutes
+to get illustration results. What I realized after some googling is that the Pig log files
+are uploaded back back to S3 in batches, and this can take 5-10 minutes. That's no good. My
+solution use the <a href="http://www.paramiko.org/">paramiko</a> library to ssh to the box and get the logs
+directly and it worked like a charm. But things are still a bit slow. It turns out Illustrate's 
+run time is affected by how much input data their is. So if i'm looking a days or month's of
+logs I suspect it build a list of all possible files and samples accordingly. (Maybe, I'm not 100%
+sure what it's doing that actaully takes forever)</p>
+<p>That's not really good enough for a tool we want to use often. So what can be done? 
+I suspect there are some optimizations that can be mad inside the implementation of
+Pig's Illustrate command itself. Ain't nobody got time for that. What can we do? 
+Give it less data. If all we care about is that our script looks like it's doing the right thing
+and the data we give it and doesn't throw an error. Let's just add a step to take out own data samples.
+So if we see a log path like s3://somebucket/logs/blah/<em> we'll just list those files ourselves
+and rewrite the script to grab one of the files. This works surprisingly well, but has it's own problems
+with more complicated matching patterns like s3://somebucket/logs/blah/</em>/stuff/ or
+s3://somebucket/logs/blah/{02,03}/*. Some of these cases are solved and some are works in progress.
+But we have something that works most of the time.</p>
+<h4>What else</h4>
+<p>So that's about it, obviously there's some code that is not yet open-sourced. And I 
+had to create a new Pig syntax highlighter for the <a href="http://ace.c9.io/">Ace editor</a>, 
+which is probably another post. Oh and it needed a name ... Porkins.</p>
+  </div>
+  <div class="article_meta">
+    <p>Posted on: Thu 14 May 2015</p>
+    <p>Category: <a href="/category/mapreduce.html">MapReduce</a>
+ &ndash; Tags:
+      <a href="/tag/mortar.html">mortar</a>,      <a href="/tag/mapreduce.html">mapreduce</a>,      <a href="/tag/pig.html">pig</a>,      <a href="/tag/emr.html">emr</a>,      <a href="/tag/python.html">python</a>,      <a href="/tag/jython.html">jython</a>    </p>
+  </div>
+
+
+</article>
+
+
+    <div id="ending_message">
+      <p>&copy; Rob Harrigan. Built using <a href="http://getpelican.com" target="_blank">Pelican</a>. Theme by Giulio Fidente on <a href="https://github.com/gfidente/pelican-svbhack" target="_blank">github</a>. </p>
+    </div>
+  </main>
+</body>
+</html>
